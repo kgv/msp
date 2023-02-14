@@ -1,0 +1,42 @@
+name: Continuous integration
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: nightly
+        # target: wasm32-unknown-unknown
+        override: true
+    - uses: actions/checkout@v3
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-build-nightly-${{ hashFiles('**/Cargo.toml') }}
+    - name: Install `libgtk-3-dev`, `librust-atk-dev`
+      run: sudo apt-get update; sudo apt-get install libgtk-3-dev; sudo apt-get install librust-atk-dev
+    - name: test
+      run: cargo +nightly test --all
+
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - run: cargo fmt --all -- --check
+
+  # clippy:
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #   - uses: actions/checkout@v2
+  #   - run: cargo clippy --all -- -D warnings
