@@ -33,7 +33,7 @@ jobs:
           ~/.cargo/git/db/
           target/
         key: ${{ runner.os }}-cargo-build-nightly-${{ hashFiles('**/Cargo.toml') }}
-    - uses: jetli/trunk-action@v0.1.0
+    - uses: jetli/trunk-action@v0.4.0
     - uses: jetli/wasm-bindgen-action@v0.1.0
     - name: build
       run: rustup run nightly trunk build --release --public-url "${GITHUB_REPOSITORY#*/}"
