@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.69"
 egui = "0.21.0"
-eframe = { version = "0.21.0", features = [
+eframe = { version = "0.21.2", features = [
     "persistence",
     "wgpu",
 ] }
