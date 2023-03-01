@@ -1,10 +1,17 @@
 //! http://www.cheminfo.org/Spectra/Utilities/NetCDF_explorer/index.html
 
-#![feature(default_free_fn)]
+#![feature(const_trait_impl)]
 #![feature(decl_macro)]
 #![feature(let_chains)]
 
+#![feature(default_free_fn)]
+#![feature(is_some_and)]
+#![feature(iter_intersperse)]
+
 use self::app::App;
+
+// 𝍠C𝍡C𝍢C𝍣C𝍤
+// 𝍩𝍪𝍫𝍬𝍭
 
 // When compiling natively.
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,3 +49,4 @@ fn main() {
 mod app;
 mod parser;
 mod utils;
+mod widget;

@@ -1,6 +1,6 @@
 use self::{
     bounder::{Bounded, Bounder},
-    predictioner::{In, Predicted, Predictioner},
+    predictioner::{Predicted, Predictioner},
 };
 use crate::{
     parser::Parsed,
@@ -8,10 +8,8 @@ use crate::{
         stats::Summary, with_index, BoundExt, Display, DroppedFileExt, InnerResponseExt, Stats,
         UiExt,
     },
-    widget::toggle,
 };
 use anyhow::{bail, Context as _, Error, Result};
-use bitflags::bitflags;
 use eframe::{epaint::Hsva, get_value, set_value, CreationContext, Frame, Storage, APP_KEY};
 use egui::{
     global_dark_light_mode_switch,
@@ -29,18 +27,20 @@ use egui::{
 };
 use indexmap::IndexMap;
 use itertools::Itertools;
-use ndarray::{Array1, Dimension};
+use ndarray::{array, Array, Array1, Array2, ArrayD, Axis, Dimension, IxDyn};
 use ndarray_stats::{
     interpolate::{Linear, Midpoint},
     Quantile1dExt, QuantileExt, SummaryStatisticsExt,
 };
 use noisy_float::types::{n64, N64};
+use petgraph::Graph;
 use serde::{Deserialize, Serialize};
+use smoothed_z_score::{PeaksDetector, PeaksFilter};
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     convert::identity,
     default::default,
-    fmt::{self, Write},
+    fmt::Write,
     fs::read_to_string,
     iter::zip,
     ops::{Bound, Deref, RangeBounds},
@@ -60,7 +60,7 @@ const MARKER_SHAPES: [MarkerShape; 10] = [
     MarkerShape::Asterisk,
 ];
 
-pub fn color(index: usize) -> Color32 {
+fn color(index: usize) -> Color32 {
     let golden_ratio: f32 = (5.0_f32.sqrt() - 1.0) / 2.0; // 0.61803398875
     let h = index as f32 * golden_ratio;
     Hsva::new(h, 0.85, 0.5, 1.0).into()
@@ -84,9 +84,8 @@ pub struct App {
 
     // Find
     mass: usize,
-    zero_is_allowed: bool,
+    zero: bool,
     pattern: Vec<Vec<usize>>,
-    count: usize,
 
     // Statistics
     statistics: Statistics,
@@ -95,7 +94,6 @@ pub struct App {
     lag: usize,
     threshold: f64,
     influence: f64,
-    temp: f64,
 
     #[serde(skip)]
     errors: Errors,
@@ -262,7 +260,7 @@ impl App {
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
                     ui.group(|ui| {
                         ui.label("Intensity:");
-                        ui.checkbox(&mut self.zero_is_allowed, "Zero is allowed")
+                        ui.checkbox(&mut self.zero, "Zero")
                             .on_hover_text("Allows masses with zero intensity");
                     });
                 });
@@ -291,10 +289,6 @@ impl App {
                 // Output
                 ui.heading("Output");
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Count:");
-                    ui.add(DragValue::new(&mut self.count).clamp_range(0..=usize::MAX));
-                });
             });
             ui.collapsing(WidgetText::from("Statistics").heading(), |ui| {
                 ui.heading("Order");
@@ -318,18 +312,9 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Label:");
-                    let mut selected = self.label.contains(Label::Index);
-                    if ui.toggle_value(&mut selected, "Index").changed() {
-                        self.label.set(Label::Index, selected);
-                    }
-                    selected = self.label.contains(Label::Mass);
-                    if ui.toggle_value(&mut selected, "Mass").changed() {
-                        self.label.set(Label::Mass, selected);
-                    }
-                    selected = self.label.contains(Label::Delta);
-                    if ui.toggle_value(&mut selected, "Delta").changed() {
-                        self.label.set(Label::Delta, selected);
-                    }
+                    ui.selectable_value(&mut self.label, Label::Mass, "Mass");
+                    ui.selectable_value(&mut self.label, Label::Delta, "Delta");
+                    ui.selectable_value(&mut self.label, Label::Index, "Index");
                 });
             });
             ui.collapsing(WidgetText::from("Trash").heading(), |ui| {
@@ -366,7 +351,6 @@ impl App {
                     // the influence (between 0 and 1) of new signals on the mean and standard deviation
                 });
             });
-            // ui.add(toggle(&mut self.temp));
         });
     }
 
@@ -511,53 +495,57 @@ impl App {
         //         [14, 14]
         //       ]
         //     ]
-        let predictions = ui.memory_mut(|memory| {
-            memory.caches.cache::<Predicted>().get(In {
-                mass: self.mass,
-                intensities: &filtered,
-                pattern: &self.pattern,
-                zero_is_allowed: self.zero_is_allowed,
-            })
-        });
-        for (i, prediction) in predictions.into_iter().take(self.count).enumerate().rev() {
-            let mut series = Vec::with_capacity(prediction.0.ndim());
+        let shape = self.pattern.iter().map(Vec::len).collect::<Vec<_>>();
+        let predictions = ArrayD::from_shape_fn(shape, |dimension| {
             let mut mass = self.mass;
-            for j in 0..prediction.0.ndim() {
-                let delta = self.pattern[j][prediction.0[j]];
-                mass -= delta;
-                let intensity = filtered[mass];
+            let mut intensity = 0.0;
+            for delta in zip(&self.pattern, dimension.slice()).map(|(step, &index)| step[index]) {
+                mass = match mass.checked_sub(delta) {
+                    None => return 0.0,
+                    Some(mass) => mass,
+                };
+                intensity += match filtered[mass] {
+                    0 if !self.zero => return 0.0,
+                    intensity => intensity as f64,
+                };
+            }
+            intensity
+        });
+        error!(?predictions);
+        if let Ok(prediction) = predictions.argmax() {
+            error!(?prediction);
+            let mut mass = self.mass;
+            let mut series = Vec::with_capacity(prediction.ndim());
+            let mut push = |index: usize, delta: usize, mass: usize, intensity: u64| {
+                let text = match self.label {
+                    Label::Mass => mass.to_string(),
+                    Label::Delta => delta.to_string(),
+                    Label::Index => index.to_string(),
+                };
                 series.push([mass as f64, intensity as f64]);
-                let mut text = String::new();
-                if self.label.contains(Label::Index) {
-                    writeln!(text, "{j}").ok();
-                }
-                if self.label.contains(Label::Mass) {
-                    writeln!(text, "{mass}").ok();
-                }
-                if self.label.contains(Label::Delta) {
-                    writeln!(text, "{delta}").ok();
-                }
-                // let mut job = LayoutJob::default();
-                // job.append(&text, 5.0 * size as f32, default());
-                // // let mut job = LayoutJob::simple(text, default(), color(i), 0.0);
-                // job.halign = Align::Center;
                 texts.push(
                     Text::new(
-                        PlotPoint::new(mass as f64, intensity as f64),
-                        RichText::new(text).monospace().size(size),
+                        PlotPoint::new(mass as f64, 2.0 * size as f64 + intensity as f64),
+                        RichText::new(text).size(size),
                     )
-                    .anchor(Align2::CENTER_BOTTOM)
-                    .color(color(i))
-                    .name(format_args!("Prediction {i}")),
+                    .name("Labels")
+                    .highlight(true),
                 );
+            };
+            push(0, 0, mass, filtered[mass]);
+            for index in 0..=prediction.ndim() {
+                let delta = self.pattern[index][prediction[index]];
+                mass -= delta;
+                let intensity = filtered[mass];
+                push(index + 1, delta, mass, intensity);
             }
             points.push(
                 Points::new(series)
-                    .color(color(i))
+                    .color(color(9))
                     .filled(true)
                     .radius(size / 2.0)
                     .shape(MarkerShape::Circle)
-                    .name(format_args!("Prediction {i}")),
+                    .name("Points"),
             );
         }
         // Limits
@@ -736,27 +724,13 @@ struct Errors {
     buffer: IndexMap<usize, Error>,
 }
 
-// #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-// enum Label {
-//     #[default]
-//     Mass,
-//     Delta,
-//     Index,
-// }
-bitflags! {
-    /// Label
-    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-    struct Label: u8 {
-        const Index = 0b001;
-        const Mass = 0b010;
-        const Delta = 0b100;
-    }
-}
-
-impl fmt::Display for Label {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
+/// Mass
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+enum Label {
+    #[default]
+    Mass,
+    Delta,
+    Index,
 }
 
 /// Limits
@@ -780,12 +754,10 @@ mod predictioner;
 #[cfg(test)]
 mod test {
     use super::*;
-    use itertools::Itertools;
-    use ndarray::{arr0, arr1, aview0, aview1, aview2, ArrayD, Axis, Dimension};
+    use ndarray::{arr0, arr1, aview0, aview1, aview2, Dimension};
     use petgraph::{
-        algo::{astar, bellman_ford, dijkstra, is_isomorphic_subgraph_matching},
-        prelude::UnGraph,
-        Direction, Graph, Undirected,
+        algo::{astar, bellman_ford, dijkstra},
+        Direction, Graph,
     };
     use std::iter::zip;
 
@@ -884,152 +856,70 @@ mod test {
             vec![12, 14],
             vec![12, 14],
         ];
-        // let shape = pattern.iter().map(Vec::len).collect::<Vec<_>>();
-        // let mut a = Array2::from(vec![0usize]).into_dyn();
-        // println!("a: {a}, {:?}, {:?}", a.dim(), a.shape());
-        // a.push(Axis(0), aview0(&9).into_dyn()).unwrap();
-        // a.insert_axis_inplace(Axis(0));
-        // for i in a {
-        //     println!("i: {i}");
-        // }
+        let shape = pattern.iter().map(Vec::len).collect::<Vec<_>>();
+        let mut a = ArrayD::<f64>::zeros(shape);
+        println!("a: {a}, {:?}, {:?}, {:?}", a.raw_dim(), a.dim(), a.shape());
+        let mut b = ArrayD::<f64>::zeros(a.shape());
+        println!("b: {b}, {:?}, {:?}, {:?}", b.raw_dim(), b.dim(), b.shape());
+        // [1]; -> [1, 1]; -> [1, 2];
+        // let c = ArrayD::<usize>::from_shape_fn(&[][..], |dimension| {
+        let mut c = ArrayD::<usize>::default(IxDyn::default());
+        println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
+        c.push(Axis(0), aview0(&9).into_dyn()).unwrap();
+        println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
+        c.insert_axis_inplace(Axis(0));
+        println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
+        c.push(Axis(1), aview1(&[8]).into_dyn()).unwrap();
+        println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
 
-        // let mut a = ArrayD::<f64>::zeros(shape);
-        // println!("a: {a}, {:?}, {:?}, {:?}", a.raw_dim(), a.dim(), a.shape());
-        // let mut b = ArrayD::<f64>::zeros(a.shape());
-        // println!("b: {b}, {:?}, {:?}, {:?}", b.raw_dim(), b.dim(), b.shape());
-        // // [1]; -> [1, 1]; -> [1, 2];
-        // // let c = ArrayD::<usize>::from_shape_fn(&[][..], |dimension| {
-        // let mut c = ArrayD::<usize>::default(IxDyn::default());
+        // c.push(Axis(1), aview1(&[7]).into_dyn()).unwrap();
         // println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
-        // c.push(Axis(0), aview0(&9).into_dyn()).unwrap();
+        // c.push(Axis(0), aview1(&[6, 5, 4]).into_dyn()).unwrap();
         // println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
-        // c.insert_axis_inplace(Axis(0));
-        // println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
-        // c.push(Axis(1), aview1(&[8]).into_dyn()).unwrap();
-        // println!("c: {c}, {:?}, {:?}, {:?}", c.raw_dim(), c.dim(), c.shape());
+
+        // let d = ArrayD::<usize>::default(&[0][..]);
+        // println!("d: {d}, {:?}, {:?}, {:?}", d.raw_dim(), d.dim(), d.shape());
+
+        // t.append(Axis(0), aview1(&[15]).into_dyn()).unwrap();
+        // println!("1: {t}");
+        // t.append(Axis(1), aview1(&[12, 14]).into_dyn()).unwrap();
+        // println!("2: {t}");
+        // let mut u = t.insert_axis(Axis(0));
     }
 
     #[test]
     fn test1() {
-        // let methane = {
-        //     let molecule = Molecule::new_undirected();
-        //     molecule
-        // };
-        let g0 = {
-            let mut g = Graph::new_undirected();
-            // C
-            let a = g.add_node(12);
-            let b = g.add_node(12);
-            g.add_edge(a, b, 1);
-            println!("g: {g:?}");
-            g
-        };
-        let g1 = {
-            let mut g = Graph::new_undirected();
-            // C
-            let a = g.add_node(12);
-            let b = g.add_node(12);
-            let c = g.add_node(12);
-            g.add_edge(a, b, 1);
-            g.add_edge(b, c, 1);
-            println!("g: {g:?}");
-            g
-        };
-        let g2 = {
-            let mut g = Graph::new_undirected();
-            // C
-            let c0 = g.add_node(12);
-            let c1 = g.add_node(12);
-            let c2 = g.add_node(12);
-            // H
-            let h0 = g.add_node(1);
-            let h1 = g.add_node(1);
-            let h2 = g.add_node(1);
-            let h3 = g.add_node(1);
-            let h4 = g.add_node(1);
-            let h5 = g.add_node(1);
-            let h6 = g.add_node(1);
-            let h7 = g.add_node(1);
-            g.extend_with_edges(&[
-                (c0, c1, 1),
-                (c1, c2, 1),
-                (c0, h0, 1),
-                (c0, h1, 1),
-                (c0, h2, 1),
-                (c1, h3, 1),
-                (c1, h4, 1),
-                (c2, h5, 1),
-                (c2, h6, 1),
-                (c2, h7, 1),
-            ]);
-            println!("g: {g:?}");
-            g
-        };
-        let g3 = {
-            let mut g = Graph::new_undirected();
-            // C
-            let c0 = g.add_node(12);
-            let c1 = g.add_node(12);
-            let c2 = g.add_node(12);
-            // H
-            let h0 = g.add_node(1);
-            let h1 = g.add_node(1);
-            let h2 = g.add_node(1);
-            let h3 = g.add_node(1);
-            let h4 = g.add_node(1);
-            let h5 = g.add_node(1);
-            g.extend_with_edges(&[
-                (c0, c1, 1),
-                (c1, c2, 2),
-                (c0, h0, 1),
-                (c0, h1, 1),
-                (c0, h2, 1),
-                (c1, h3, 1),
-                (c2, h4, 1),
-                (c2, h5, 1),
-            ]);
-            println!("g: {g:?}");
-            g
-        };
-        let g4 = {
-            let mut g = Graph::new_undirected();
-            // C
-            let c0 = g.add_node(12);
-            let c1 = g.add_node(12);
-            let c2 = g.add_node(12);
-            // H
-            let h0 = g.add_node(1);
-            let h1 = g.add_node(1);
-            let h2 = g.add_node(1);
-            let h3 = g.add_node(1);
-            let h4 = g.add_node(1);
-            let h5 = g.add_node(1);
-            g.extend_with_edges(&[
-                (c0, c1, 2),
-                (c1, c2, 1),
-                (c0, h0, 1),
-                (c0, h1, 1),
-                (c1, h2, 1),
-                (c2, h3, 1),
-                (c2, h4, 1),
-                (c2, h5, 1),
-            ]);
-            println!("g: {g:?}");
-            g
-        };
-        let check = is_isomorphic_subgraph_matching(&g0, &g1, |x, y| x == y, |x, y| x == y);
-        println!("check: {check}");
-        let check = is_isomorphic_subgraph_matching(&g3, &g4, PartialEq::eq, PartialEq::eq);
-        println!("check: {check}");
+        use std::hash::Hash;
+        fn h<H: Hash>(h: H) {}
 
-        // for node in g.neighbors_directed(a, Direction::Outgoing) {
-        //     println!("i: {node:?}, {:?}", g.node_weight(node));
-        // }
-        // for edge in g.edges(a) {
-        //     println!("edge: {edge:?}, {:?}", edge.weight());
-        // }
-        // let astar_map = astar(&g, start, |node| node == end, |edge| *edge.weight(), |_| 0);
-        // println!("astar: {:?}", astar_map);
+        let mut g = Graph::new();
+        // h(g);
+        let start = g.add_node(0);
+        let a = g.add_node(1);
+        g.add_edge(start, a, 0);
+        let aa = g.add_node(1);
+        let ab = g.add_node(1);
+        g.add_edge(a, aa, 12);
+        g.add_edge(a, ab, 14);
+        let aaa = g.add_node(1);
+        let abb = g.add_node(1);
+        g.add_edge(aa, aaa, 12);
+        g.add_edge(ab, aaa, 12);
+        g.add_edge(aa, abb, 14);
+        g.add_edge(ab, abb, 14);
+        let end = g.add_node(0);
+        g.add_edge(aaa, end, 0);
+        g.add_edge(abb, end, 0);
+
+        println!("g: {g:?}");
+        for node in g.neighbors_directed(a, Direction::Outgoing) {
+            println!("i: {node:?}, {:?}", g.node_weight(node));
+        }
+        for edge in g.edges(a) {
+            println!("edge: {edge:?}, {:?}", edge.weight());
+        }
+        let astar_map = astar(&g, start, |node| node == end, |edge| *edge.weight(), |_| 0);
+        println!("astar: {:?}", astar_map);
 
         // Z is disconnected.
         // let _ = g.add_node("Z");

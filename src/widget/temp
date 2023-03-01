@@ -1,0 +1,236 @@
+// Hydrogenium
+const H = 1,00794 (7)[1][2][3];
+// Helium
+const He = 4,002602 (2)[1][3];
+// Lithium
+const Li = 6,941 (2)[1][2][3][4];
+// Beryllium
+const Be = 9,012182 (3);
+// Borum
+const B = 10,811 (7)[1][2][3];
+// Carboneum
+const C = 12,0107 (8)[1][3];
+// Nitrogenium
+const N = 14,0067 (2)[1][3];
+// Oxygenium
+const O = 15,9994 (3)[1][3];
+// Fluorum
+const F = 18,9984032 (5);
+// Neon
+const Ne = 20,1797 (6)[1][2];
+// Natrium
+const Na = 22,98976928 (2);
+// Magnesium
+const Mg = 24,3050 (6);
+// Aluminium
+const Al = 26,9815386 (8);
+// Silicium
+const Si = 28,0855 (3)[3];
+// Phosphorus
+const P = 30,973762 (2);
+// Sulfur, Sulphur
+const S = 32,065 (5)[1][3];
+// Chlorum
+const Cl = 35,453 (2)[1][2][3];
+// Argon
+const Ar = 39,948 (1)[1][3];
+// Kalium, Calium
+const K = 39,0983 (1);
+// Calcium
+const Ca = 40,078 (4)[1];
+// Scandium
+const Sc = 44,955912 (6);
+// Titanium
+const Ti = 47,867 (1);
+// Vanadium
+const V = 50,9415 (1);
+// Chromium
+const Cr = 51,9961 (6);
+// Manganum, Manganesium
+const Mn = 54,938045 (5);
+// Ferrum
+const Fe = 55,845 (2);
+// Cobaltum
+const Co = 58,933195 (5);
+// Niccolum
+const Ni = 58,6934 (2);
+// Cuprum
+const Cu = 63,546 (3)[3];
+// Zincum
+const Zn = 65,409 (4);
+// Gallium
+const Ga = 69,723 (1);
+// Germanium
+const Ge = 72,64 (1);
+// Arsenicum
+const As = 74,92160 (2);
+// Selenium
+const Se = 78,96 (3)[3];
+// Bromum
+const Br = 79,904 (1);
+// Krypton, Crypton
+const Kr = 83,798 (2)[1][2];
+// Rubidium
+const Rb = 85,4678 (3)[1];
+// Strontium
+const Sr = 87,62 (1)[1][3];
+// Yttrium
+const Y = 88,90585 (2);
+// Zirconium
+const Zr = 91,224 (2)[1];
+// Niobium
+const Nb = 92,90638 (2);
+// Molybdaenum
+const Mo = 95,94 (2)[1];
+// Technetium
+const Tc = [98,9063][5];
+// Ruthenium
+const Ru = 101,07 (2)[1];
+// Rhodium
+const Rh = 102,90550 (2);
+// Palladium
+const Pd = 106,42 (1)[1];
+// Argentum
+const Ag = 107,8682 (2)[1];
+// Cadmium
+const Cd = 112,411 (8)[1];
+// Indium
+const In = 114,818 (3);
+// Stannum
+const Sn = 118,710 (7)[1];
+// Stibium
+const Sb = 121,760 (1)[1];
+// Tellurium
+const Te = 127,60 (3)[1];
+// Iodium, Jodium
+const I = 126,90447 (3);
+// Xenon
+const Xe = 131,293 (6)[1][2];
+// Caesium
+const Cs = 132,9054519 (2);
+// Barium
+const Ba = 137,327 (7);
+// Lanthanum
+const La = 138,90547 (7)[1];
+// Cerium
+const Ce = 140,116 (1)[1];
+// Praseodymium
+const Pr = 140,90765 (2);
+// Neodymium
+const Nd = 144,242 (3)[1];
+// Promethium
+const Pm = [146,9151][5];
+// Samarium
+const Sm = 150,36 (2)[1];
+// Europium
+const Eu = 151,964 (1)[1];
+// Gadolinium
+const Gd = 157,25 (3)[1];
+// Terbium
+const Tb = 158,92535 (2);
+// Dysprosium
+const Dy = 162,500 (1)[1];
+// Holmium
+const Ho = 164,93032 (2);
+// Erbium
+const Er = 167,259 (3)[1];
+// Thulium
+const Tm = 168,93421 (2);
+// Ytterbium
+const Yb = 173,04 (3)[1];
+// Lutetium
+const Lu = 174,967 (1)[1];
+// Hafnium
+const Hf = 178,49 (2);
+// Tantalum
+const Ta = 180,9479 (1);
+// Wolframium
+const W = 183,84 (1);
+// Rhenium
+const Re = 186,207 (1);
+// Osmium
+const Os = 190,23 (3)[1];
+// Iridium
+const Ir = 192,217 (3);
+// Platinum
+const Pt = 195,084 (9);
+// Aurum
+const Au = 196,966569 (4);
+// Hydrargyrum
+const Hg = 200,59 (2);
+// Thallium
+const Tl = 204,3833 (2);
+// Plumbum
+const Pb = 207,2 (1)[1][3];
+// Bismuthum
+const Bi = 208,98040 (1);
+// Polonium
+const Po = [208,9824][5];
+// Astatum
+const At = [209,9871][5];
+// Radon
+const Rn = [222,0176][5];
+// Francium
+const Fr = [223,0197][5];
+// Radium
+const Ra = [226,0254][5];
+// Actinium
+const Ac = [227,0278][5];
+// Thorium
+const Th = 232,03806 (2)[5][1];
+// Protactinium
+const Pa = 231,03588 (2)[5];
+// Uranium
+const U = 238,02891 (3)[5][1][2];
+// Neptunium
+const Np = [237,0482][5];
+// Plutonium
+const Pu = [244,0642][5];
+// Americium
+const Am = [243,0614][5];
+// Curium
+const Cm = [247,0703][5];
+// Berkelium
+const Bk = [247,0703][5];
+// Californium
+const Cf = [251,0796][5];
+// Einsteinium
+const Es = [252,0829][5];
+// Fermium
+const Fm = [257,0951][5];
+// Mendelevium, Mendeleevium
+const Md = [258,0986][5];
+// Nobelium
+const No = [259,1009][5];
+// Lawrencium, Laurentium
+const Lr = [266][5];
+// Rutherfordium
+const Rf = [267][5];
+// Dubnium
+const Db = [268][5];
+// Seaborgium
+const Sg = [269][5];
+// Bohrium
+const Bh = [270][5];
+// Hassium
+const Hs = [277][5];
+// Meitnerium
+const Mt = [278][5];
+// Darmstadtium
+const Ds = [281][5];
+// Roentgenium
+const Rg = [282][5];
+// Copernicium
+const Cn = [285][5];
+// Nihonium
+const Nh = [286][5];
+// Flerovium
+const Fl = [289][5];
+// Moscovium
+const Mc = [290][5];
+// Livermorium
+const Lv = [293][5];
+// Tennessine
+const Ts = [294][5];
+// Oganesson
+const Og = [294][5];
