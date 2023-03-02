@@ -1,5 +1,3 @@
-//! http://www.cheminfo.org/Spectra/Utilities/NetCDF_explorer/index.html
-
 #![feature(const_trait_impl)]
 #![feature(decl_macro)]
 #![feature(let_chains)]

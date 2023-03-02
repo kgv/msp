@@ -1,64 +1,36 @@
 use self::{
-    bounder::{Bounded, Bounder},
-    predictioner::{In, Predicted, Predictioner},
+    bounder::Bounded,
+    predictioner::{Key, Predicted},
 };
 use crate::{
     parser::Parsed,
-    utils::{
-        stats::Summary, with_index, BoundExt, Display, DroppedFileExt, InnerResponseExt, Stats,
-        UiExt,
-    },
-    widget::toggle,
+    utils::{with_index, Display, DroppedFileExt, RangeBoundsExt, UiExt},
 };
-use anyhow::{bail, Context as _, Error, Result};
+use anyhow::Error;
 use bitflags::bitflags;
 use eframe::{epaint::Hsva, get_value, set_value, CreationContext, Frame, Storage, APP_KEY};
 use egui::{
     global_dark_light_mode_switch,
-    menu::{self, bar},
+    menu::bar,
     plot::{
-        self, Bar, BarChart, BoxElem, BoxPlot, BoxSpread, CoordinatesFormatter, Corner, HLine,
-        Legend, MarkerShape, Plot, PlotPoint, Points, Text, VLine,
+        self, Bar, BarChart, CoordinatesFormatter, Corner, HLine, Legend, MarkerShape, Plot,
+        PlotPoint, Points, Text, VLine,
     },
-    popup_below_widget,
-    text::LayoutJob,
-    util::cache::{ComputerMut, FrameCache},
-    warn_if_debug_build, Align, Align2, CentralPanel, Color32, ComboBox, Context, DragValue,
-    DroppedFile, FontId, Id, LayerId, Layout, Order, Response, RichText, SidePanel, Style,
-    TextStyle, TopBottomPanel, Ui, Visuals, WidgetText, Window,
+    warn_if_debug_build, Align, Align2, CentralPanel, Color32, Context, DragValue, DroppedFile, Id,
+    LayerId, Layout, Order, Response, RichText, SidePanel, Slider, TextStyle, TopBottomPanel, Ui,
+    WidgetText, Window,
 };
 use indexmap::IndexMap;
-use itertools::Itertools;
 use ndarray::{Array1, Dimension};
-use ndarray_stats::{
-    interpolate::{Linear, Midpoint},
-    Quantile1dExt, QuantileExt, SummaryStatisticsExt,
-};
-use noisy_float::types::{n64, N64};
+use ndarray_stats::{interpolate::Linear, Quantile1dExt};
+use noisy_float::types::n64;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
-    convert::identity,
-    default::default,
+    collections::{HashMap, HashSet},
     fmt::{self, Write},
-    fs::read_to_string,
-    iter::zip,
-    ops::{Bound, Deref, RangeBounds},
+    ops::{Bound, RangeBounds},
 };
-use tracing::{error, info, trace};
-
-const MARKER_SHAPES: [MarkerShape; 10] = [
-    MarkerShape::Circle,
-    MarkerShape::Diamond,
-    MarkerShape::Square,
-    MarkerShape::Cross,
-    MarkerShape::Plus,
-    MarkerShape::Up,
-    MarkerShape::Down,
-    MarkerShape::Left,
-    MarkerShape::Right,
-    MarkerShape::Asterisk,
-];
+use tracing::{error, info};
 
 pub fn color(index: usize) -> Color32 {
     let golden_ratio: f32 = (5.0_f32.sqrt() - 1.0) / 2.0; // 0.61803398875
@@ -84,7 +56,6 @@ pub struct App {
 
     // Find
     mass: usize,
-    zero_is_allowed: bool,
     pattern: Vec<Vec<usize>>,
     count: usize,
 
@@ -170,7 +141,6 @@ impl App {
     fn bottom_panel(&mut self, ctx: &Context) {
         TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             bar(ui, |ui| {
-                ui.toggle_value(&mut self.errors.show, "⚠");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     warn_if_debug_build(ui);
                     ui.spacing();
@@ -196,21 +166,22 @@ impl App {
     }
 
     fn left_panel(&mut self, ctx: &Context) {
-        SidePanel::left("left_panel").show(ctx, |ui| {
+        SidePanel::left("left_panel").show_animated(ctx, self.left_panel, |ui| {
             ui.heading("Left Panel");
             ui.separator();
             ui.collapsing(WidgetText::from("Filter").heading(), |ui| {
                 // Bounds
+                ui.separator();
                 ui.heading("Bounds");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Mass:");
+                    let end = self.bounds.mass.end();
                     ui.drag_bound(&mut self.bounds.mass.0, |drag_value| {
-                        let end = self.bounds.mass.1.value().copied().unwrap_or(usize::MAX);
                         drag_value.clamp_range(0..=end)
                     });
+                    let start = self.bounds.mass.start();
                     ui.drag_bound(&mut self.bounds.mass.1, |drag_value| {
-                        let start = self.bounds.mass.0.value().copied().unwrap_or(0);
                         drag_value.clamp_range(start..=usize::MAX)
                     });
                 });
@@ -219,6 +190,7 @@ impl App {
                     ui.drag_bound(&mut self.bounds.intensity, |drag_value| drag_value);
                 });
                 // Limits
+                ui.separator();
                 ui.heading("Limits");
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -250,59 +222,58 @@ impl App {
             });
             ui.collapsing(WidgetText::from("Finder").heading(), |ui| {
                 // Input
+                ui.separator();
                 ui.heading("Input");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Mass:");
-                    ui.add(DragValue::new(&mut self.mass).clamp_range(
-                        0..=self.bounds.mass.1.value().copied().unwrap_or(usize::MAX),
-                    ));
+                    ui.add(DragValue::new(&mut self.mass).clamp_range(0..=self.bounds.mass.end()));
                     if ui.button("🔍").clicked() {}
                 });
-                ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                    ui.group(|ui| {
-                        ui.label("Intensity:");
-                        ui.checkbox(&mut self.zero_is_allowed, "Zero is allowed")
-                            .on_hover_text("Allows masses with zero intensity");
-                    });
-                });
+                let mut repeat = None;
                 self.pattern.retain_mut(|step| {
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("-").monospace()).clicked() {
-                            if step.pop().is_none() {
-                                return false;
-                            }
+                            step.pop();
+                            return !step.is_empty();
                         }
                         for variant in step.iter_mut() {
-                            ui.add(DragValue::new(variant).clamp_range(
-                                0..=self.bounds.mass.1.value().copied().unwrap_or(usize::MAX),
-                            ));
+                            ui.add(DragValue::new(variant).clamp_range(0..=self.bounds.mass.end()));
                         }
                         if ui.button(RichText::new("+").monospace()).clicked() {
                             step.push(0);
+                        }
+                        if ui.button(RichText::new("🔃").monospace()).clicked() {
+                            repeat = Some(step.clone());
                         }
                         true
                     })
                     .inner
                 });
                 if ui.button(RichText::new("+").monospace()).clicked() {
-                    self.pattern.push(Vec::new());
+                    self.pattern.push(vec![0]);
+                }
+                if let Some(step) = repeat {
+                    self.pattern.push(step);
                 }
                 // Output
+                ui.separator();
                 ui.heading("Output");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Count:");
-                    ui.add(DragValue::new(&mut self.count).clamp_range(0..=usize::MAX));
+                    ui.add(Slider::new(&mut self.count, 0..=10));
                 });
             });
             ui.collapsing(WidgetText::from("Statistics").heading(), |ui| {
+                ui.separator();
                 ui.heading("Order");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Quantile:");
                     ui.drag_option(&mut self.statistics.quantile, 0.0..=1.0, 0.001);
                 });
+                ui.separator();
                 ui.heading("Summary");
                 ui.separator();
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
@@ -314,6 +285,7 @@ impl App {
                 });
             });
             ui.collapsing(WidgetText::from("Visual").heading(), |ui| {
+                ui.separator();
                 ui.heading("Plot Legend");
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -376,6 +348,7 @@ impl App {
                 global_dark_light_mode_switch(ui);
                 ui.separator();
                 ui.toggle_value(&mut self.left_panel, "🛠 Control");
+                ui.toggle_value(&mut self.errors.show, "⚠ Errors");
             });
         });
     }
@@ -442,27 +415,48 @@ impl App {
         let mut texts = Vec::new();
 
         let parsed = &self.parsed[&0];
-        let unfiltered = parsed.intensities();
         // Unfiltered bar chart
-        let bars = unfiltered
+        let bars = parsed
+            .peaks
             .iter()
-            .enumerate()
-            .map(|(mass, &intensity)| Bar::new(mass as _, intensity as _).name(mass))
+            .map(|(&mass, &intensity)| Bar::new(mass as _, intensity as _).name(mass))
             .collect();
         bar_charts.push(
             BarChart::new(bars)
                 .name("Unfiltered")
                 .color(Color32::GRAY.linear_multiply(0.1)),
         );
-        // let array = Array1::from_iter(unfiltered.iter().map(|&i| i as f64));
-        let mut array = Array1::from_iter(unfiltered.clone());
+        // Filtered bar chart
+        let peaks = ui.memory_mut(|memory| {
+            memory
+                .caches
+                .cache::<Bounded>()
+                .get((&parsed.peaks, self.bounds))
+        });
+        let bars = peaks
+            .iter()
+            .map(|(&mass, &intensity)| Bar::new(mass as _, intensity as _).name(mass))
+            .collect();
+        bar_charts.push(
+            BarChart::new(bars)
+                .name("Filtered")
+                .color(self.colors[0])
+                .element_formatter(Box::new(
+                    |Bar {
+                         argument, value, ..
+                     },
+                     _| format!("{argument} {value}"),
+                )),
+        );
+        // Statistics
+        let mut intensities = Array1::from_iter(parsed.intensities());
         if self.statistics.mean {
-            if let Some(mean) = array.mean() {
+            if let Some(mean) = intensities.mean() {
                 lines.push(HLine::new(mean as f64).name("Mean").into());
             }
         }
         if let Some(quantile) = self.statistics.quantile {
-            if let Ok(value) = array.quantile_mut(n64(quantile), &Linear) {
+            if let Ok(value) = intensities.quantile_mut(n64(quantile), &Linear) {
                 lines.push(
                     HLine::new(value as f64)
                         .name(format_args!("Quantile {:.1}%", quantile * 100.0))
@@ -470,26 +464,6 @@ impl App {
                 );
             }
         }
-        // Filtered bar chart
-        let filtered = ui.memory_mut(|memory| {
-            memory
-                .caches
-                .cache::<Bounded>()
-                .get((&unfiltered, self.bounds))
-        });
-        let bars = filtered
-            .iter()
-            .enumerate()
-            .filter_map(|(mass, &intensity)| {
-                (intensity != 0).then_some(Bar::new(mass as _, intensity as _).name(mass))
-            })
-            .collect();
-        bar_charts.push(
-            BarChart::new(bars)
-                .name("Filtered")
-                .color(self.colors[0])
-                .element_formatter(Box::new(|bar, _| format!("{} {}", bar.argument, bar.value))),
-        );
         // Find
         // let p = vec![vec![15], vec![12, 12, 14, 14, 14, 14, 14, 14]];
         // let pattern = &[
@@ -512,20 +486,21 @@ impl App {
         //       ]
         //     ]
         let predictions = ui.memory_mut(|memory| {
-            memory.caches.cache::<Predicted>().get(In {
+            memory.caches.cache::<Predicted>().get(Key {
                 mass: self.mass,
-                intensities: &filtered,
+                peaks: &peaks,
                 pattern: &self.pattern,
-                zero_is_allowed: self.zero_is_allowed,
+                zero_is_included: (self.bounds.intensity, Bound::Unbounded).contains(&0),
             })
         });
         for (i, prediction) in predictions.into_iter().take(self.count).enumerate().rev() {
+            let color = color(i);
             let mut series = Vec::with_capacity(prediction.0.ndim());
             let mut mass = self.mass;
             for j in 0..prediction.0.ndim() {
                 let delta = self.pattern[j][prediction.0[j]];
                 mass -= delta;
-                let intensity = filtered[mass];
+                let intensity = peaks.get(&mass).copied().unwrap_or_default();
                 series.push([mass as f64, intensity as f64]);
                 let mut text = String::new();
                 if self.label.contains(Label::Index) {
@@ -547,13 +522,13 @@ impl App {
                         RichText::new(text).monospace().size(size),
                     )
                     .anchor(Align2::CENTER_BOTTOM)
-                    .color(color(i))
+                    .color(color)
                     .name(format_args!("Prediction {i}")),
                 );
             }
             points.push(
                 Points::new(series)
-                    .color(color(i))
+                    .color(color)
                     .filled(true)
                     .radius(size / 2.0)
                     .shape(MarkerShape::Circle)
@@ -573,78 +548,7 @@ impl App {
         if let Some(value) = self.limits.intensity.1 {
             lines.push(HLine::new(value as f64).name("Max intensity").into());
         }
-
-        // let permutations = [12, 12, 14, 14, 14, 14, 14, 14]
-        //     .into_iter()
-        //     .permutations(8)
-        //     .unique();
-        // let points = permutations
-        //     .filter_map(|permutation| {
-        //         // error!(len = %filtered.len(), ?filtered);
-        //         let prediction = ui.memory_mut(|memory| {
-        //             memory
-        //                 .caches
-        //                 .cache::<Predicted>()
-        //                 .get((&permutation, &filtered[0..=self.mass]))
-        //         });
-        //         if prediction < f64::EPSILON {
-        //             return None;
-        //         }
-        //         // error!(?permutation);
-        //         let mut mass = self.mass;
-        //         let mut series = vec![[mass as _, filtered[mass] as _]];
-        //         for &delta in &permutation {
-        //             mass -= delta;
-        //             let intensity = filtered[mass];
-        //             series.push([mass as _, intensity as _]);
-        //         }
-        //         Some(
-        //             Points::new(series)
-        //                 .filled(true)
-        //                 .radius(9.0)
-        //                 .shape(MarkerShape::Circle)
-        //                 .name(prediction),
-        //         )
-        //     })
-        //     .collect::<Vec<_>>();
-
-        // let points = filtered
-        //     .iter()
-        //     .enumerate()
-        //     .rev()
-        //     .map(|(mass, &intensity)| {
-        //         permutations
-        //             .clone()
-        //             .filter_map(|permutation| {
-        //                 let permutations = ui.memory_mut(|memory| {
-        //                     let cache = memory.caches.cache::<Predicted>();
-        //                     cache.get((&permutation, &filtered))
-        //                 });
-        //                 // error!(?permutation);
-        //                 let mut mass = mass;
-        //                 let mut accumulator = 1.0;
-        //                 let mut series = vec![[mass as f64, intensity as _]];
-        //                 for &dm in &permutation {
-        //                     mass = mass.checked_sub(dm)?;
-        //                     let intensity = filtered[mass];
-        //                     if intensity < 25.0 {
-        //                         return None;
-        //                     }
-        //                     accumulator *= intensity / sum;
-        //                     series.push([mass as _, intensity as _]);
-        //                 }
-        //                 Some(
-        //                     Points::new(series)
-        //                         .filled(true)
-        //                         .radius(9.0)
-        //                         .shape(MarkerShape::Circle)
-        //                         .name(accumulator),
-        //                 )
-        //             })
-        //             .collect()
-        //     })
-        //     .collect::<Vec<Vec<_>>>();
-        // error!(?points);
+        // Plot
         Plot::new("plot")
             .legend(Legend::default())
             .coordinates_formatter(Corner::LeftBottom, CoordinatesFormatter::default())
@@ -736,13 +640,6 @@ struct Errors {
     buffer: IndexMap<usize, Error>,
 }
 
-// #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-// enum Label {
-//     #[default]
-//     Mass,
-//     Delta,
-//     Index,
-// }
 bitflags! {
     /// Label
     #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -773,7 +670,6 @@ struct Statistics {
     quantile: Option<f64>,
 }
 
-// mod permutationer;
 mod bounder;
 mod predictioner;
 

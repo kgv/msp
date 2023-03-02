@@ -1,5 +1,5 @@
 pub(crate) use self::{
-    bound::BoundExt,
+    bound::{BoundExt, RangeBoundsExt},
     display::Trait as Display,
     egui::{CollapsingStateExt, DroppedFileExt, InnerResponseExt, ResponseExt, UiExt},
     float::FloatExt,

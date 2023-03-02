@@ -1,28 +1,29 @@
 use crate::app::Bounds;
 use egui::util::cache::{ComputerMut, FrameCache};
-use std::ops::{Bound, RangeBounds};
+use std::{
+    collections::BTreeMap,
+    ops::{Bound, RangeBounds},
+};
 
 /// Bounded
-pub(super) type Bounded = FrameCache<Vec<u64>, Bounder>;
+pub(super) type Bounded = FrameCache<Value, Bounder>;
 
 /// Bounder
 #[derive(Default)]
 pub(super) struct Bounder;
 
-impl ComputerMut<(&[u64], Bounds), Vec<u64>> for Bounder {
-    fn compute(&mut self, (intensities, bounds): (&[u64], Bounds)) -> Vec<u64> {
-        intensities
+impl ComputerMut<(&Value, Bounds), Value> for Bounder {
+    fn compute(&mut self, (peaks, bounds): (&Value, Bounds)) -> Value {
+        peaks
             .iter()
-            .enumerate()
-            .map(|(mass, &intensity)| {
-                if bounds.mass.contains(&mass)
-                    && (bounds.intensity, Bound::Unbounded).contains(&intensity)
-                {
-                    intensity
-                } else {
-                    0
-                }
+            .filter_map(|(mass, intensity)| {
+                (bounds.mass.contains(mass)
+                    && (bounds.intensity, Bound::Unbounded).contains(intensity))
+                .then_some((*mass, *intensity))
             })
             .collect()
     }
 }
+
+/// Value
+type Value = BTreeMap<usize, u64>;

@@ -11,6 +11,7 @@ use nom::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     default::default,
     str::{self, FromStr},
 };
@@ -101,7 +102,7 @@ pub struct Parsed {
     pub mw: Option<u64>,
     pub nist: Option<u64>,
     pub synonym: String,
-    pub peaks: IndexMap<usize, u64>,
+    pub peaks: BTreeMap<usize, u64>,
 }
 
 impl Parsed {
